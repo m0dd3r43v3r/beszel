@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -102,6 +103,19 @@ func (c *gpuCollector) collect() error {
 		return fmt.Errorf("failed to start command: %w", err)
 	}
 
+	// For intel_gpu_top, read the entire output as one JSON object
+	if c.name == intelGpuTopCmd {
+		output, err := io.ReadAll(stdout)
+		if err != nil {
+			return fmt.Errorf("failed to read intel_gpu_top output: %w", err)
+		}
+		if !c.parse(output) {
+			return errNoValidData
+		}
+		return cmd.Wait()
+	}
+
+	// For other tools, use line-by-line scanning
 	scanner := bufio.NewScanner(stdout)
 	if c.buf == nil {
 		c.buf = make([]byte, 0, cmdBufferSize)
@@ -429,6 +443,8 @@ func (gm *GPUManager) startCollector(command string) {
 	case intelGpuTopCmd:
 		collector.cmdArgs = []string{
 			"-J",           // JSON output
+			"-s", "1",      // 1 second refresh rate
+			"-o", "-",      // Output to stdout
 		}
 		collector.parse = gm.parseIntelGpuTopData
 		go func() {
