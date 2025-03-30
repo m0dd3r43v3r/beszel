@@ -311,6 +311,7 @@ echo "Downloading and installing the agent..."
 OS=$(uname -s | sed -e 'y/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/')
 ARCH=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/armv6l/arm/' -e 's/armv7l/arm/' -e 's/aarch64/arm64/')
 FILE_NAME="beszel_${OS}_${ARCH}.tar.gz"
+BINARY_NAME="beszel-agent_${OS}_${ARCH}"
 LATEST_VERSION=$(curl -s "$GITHUB_API_URL""/repos/$GITHUB_USER/$GITHUB_REPO/releases/latest" | grep -o '"tag_name": "v[^"]*"' | cut -d'"' -f4 | tr -d 'v')
 if [ -z "$LATEST_VERSION" ]; then
   echo "Failed to get latest version"
@@ -340,13 +341,13 @@ if [ "$($CHECK_CMD "$FILE_NAME" | cut -d' ' -f1)" != "$CHECKSUM" ]; then
   exit 1
 fi
 
-if ! tar -xzf "$FILE_NAME" beszel-agent; then
+if ! tar -xzf "$FILE_NAME" "$BINARY_NAME"; then
   echo "Failed to extract the agent"
   rm -rf "$TEMP_DIR"
   exit 1
 fi
 
-mv beszel-agent /opt/beszel-agent/beszel-agent
+mv "$BINARY_NAME" /opt/beszel-agent/beszel-agent
 chown beszel:beszel /opt/beszel-agent/beszel-agent
 chmod 755 /opt/beszel-agent/beszel-agent
 
