@@ -750,25 +750,44 @@ func TestParseIntelGpuTopData(t *testing.T) {
 	}{
 		{
 			name: "valid intel-gpu-top data",
-			input: `Engine     GPU  Power  Memory  Memory  Temperature
-GPU       Intel(R) UHD Graphics 630  15.3  1024.0  8192.0  45.0`,
+			input: `{
+				"power": {
+					"GPU": 15.3,
+					"Package": 20.0,
+					"unit": "W"
+				},
+				"engines": {
+					"Render/3D": {
+						"busy": 25.0,
+						"unit": "%"
+					},
+					"Blitter": {
+						"busy": 10.0,
+						"unit": "%"
+					},
+					"Video": {
+						"busy": 5.0,
+						"unit": "%"
+					},
+					"VideoEnhance": {
+						"busy": 0.0,
+						"unit": "%"
+					}
+				}
+			}`,
 			wantData: map[string]system.GPUData{
 				"0": {
-					Name:        "Intel(R) UHD Graphics 630",
-					Temperature: 45.0,
-					MemoryUsed:  1024.0,
-					MemoryTotal: 8192.0,
-					Usage:       0.0,
-					Power:       15.3,
-					Count:       1,
+					Name:  "Intel GPU",
+					Usage: 40.0, // 25 + 10 + 5 + 0
+					Power: 20.0, // Higher of GPU (15.3) and Package (20.0)
+					Count: 1,
 				},
 			},
 			wantValid: true,
 		},
 		{
-			name: "invalid data format",
-			input: `Engine     GPU  Power  Memory  Memory  Temperature
-Invalid    Format`,
+			name:      "invalid json",
+			input:     "{bad json",
 			wantData:  map[string]system.GPUData{},
 			wantValid: false,
 		},
@@ -787,9 +806,6 @@ Invalid    Format`,
 					got := gm.GpuDataMap[id]
 					require.NotNil(t, got)
 					assert.Equal(t, want.Name, got.Name)
-					assert.InDelta(t, want.Temperature, got.Temperature, 0.01)
-					assert.InDelta(t, want.MemoryUsed, got.MemoryUsed, 0.01)
-					assert.InDelta(t, want.MemoryTotal, got.MemoryTotal, 0.01)
 					assert.InDelta(t, want.Usage, got.Usage, 0.01)
 					assert.InDelta(t, want.Power, got.Power, 0.01)
 					assert.Equal(t, want.Count, got.Count)

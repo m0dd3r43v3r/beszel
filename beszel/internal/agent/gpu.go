@@ -239,44 +239,99 @@ func (gm *GPUManager) parseAmdData(output []byte) bool {
 	return true
 }
 
+// IntelGpuTopJson represents the JSON structure of intel-gpu-top output
+type IntelGpuTopJson struct {
+	Power struct {
+		GPU     float64 `json:"GPU"`
+		Package float64 `json:"Package"`
+		Unit    string  `json:"unit"`
+	} `json:"power"`
+	Engines struct {
+		Render3D struct {
+			Busy float64 `json:"busy"`
+			Unit string  `json:"unit"`
+		} `json:"Render/3D"`
+		Blitter struct {
+			Busy float64 `json:"busy"`
+			Unit string  `json:"unit"`
+		} `json:"Blitter"`
+		Video struct {
+			Busy float64 `json:"busy"`
+			Unit string  `json:"unit"`
+		} `json:"Video"`
+		VideoEnhance struct {
+			Busy float64 `json:"busy"`
+			Unit string  `json:"unit"`
+		} `json:"VideoEnhance"`
+	} `json:"engines"`
+}
+
+// getIntelGpuName gets the name of the Intel GPU using intel-gpu-top
+func (gm *GPUManager) getIntelGpuName() string {
+	cmd := exec.Command("intel-gpu-top")
+	output, err := cmd.Output()
+	if err != nil {
+		return "Intel GPU"
+	}
+
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	if scanner.Scan() {
+		line := scanner.Text()
+		// Extract the GPU name from the first line
+		// Format: "intel-gpu-top: Intel Alderlake_n (Gen12) @ /dev/dri/card1"
+		if strings.Contains(line, "Intel") {
+			parts := strings.Split(line, "Intel")
+			if len(parts) > 1 {
+				name := strings.Split(parts[1], "@")[0]
+				name = strings.TrimSpace(name)
+				return name
+			}
+		}
+	}
+	return "Intel GPU"
+}
+
 // parseIntelGpuTopData parses the output of intel-gpu-top and updates the GPUData map
 func (gm *GPUManager) parseIntelGpuTopData(output []byte) bool {
+	var intelGpuInfo IntelGpuTopJson
+	if err := json.Unmarshal(output, &intelGpuInfo); err != nil {
+		slog.Debug("Failed to parse Intel GPU JSON", "error", err)
+		return false
+	}
 	gm.Lock()
 	defer gm.Unlock()
-	scanner := bufio.NewScanner(bytes.NewReader(output))
-	var valid bool
-	for scanner.Scan() {
-		line := scanner.Text()
-		// Skip header lines
-		if strings.Contains(line, "Engine") || strings.Contains(line, "GPU") {
-			continue
-		}
-		// Parse GPU data line
-		fields := strings.Fields(line)
-		if len(fields) < 6 {
-			continue
-		}
-		valid = true
-		id := "0" // intel-gpu-top only shows one GPU at a time
-		name := fields[0]
-		usage, _ := strconv.ParseFloat(fields[1], 64)
-		power, _ := strconv.ParseFloat(fields[2], 64)
-		memoryUsed, _ := strconv.ParseFloat(fields[3], 64)
-		memoryTotal, _ := strconv.ParseFloat(fields[4], 64)
-		temperature, _ := strconv.ParseFloat(fields[5], 64)
 
-		if _, ok := gm.GpuDataMap[id]; !ok {
-			gm.GpuDataMap[id] = &system.GPUData{Name: name}
-		}
-		gpu := gm.GpuDataMap[id]
-		gpu.Temperature = temperature
-		gpu.MemoryUsed = memoryUsed
-		gpu.MemoryTotal = memoryTotal
-		gpu.Usage += usage
-		gpu.Power += power
-		gpu.Count++
+	id := "0" // intel-gpu-top only shows one GPU at a time
+	if _, ok := gm.GpuDataMap[id]; !ok {
+		name := gm.getIntelGpuName()
+		slog.Debug("Initializing Intel GPU", "name", name)
+		gm.GpuDataMap[id] = &system.GPUData{Name: name}
 	}
-	return valid
+	gpu := gm.GpuDataMap[id]
+	
+	// Calculate total GPU usage from all engines
+	totalUsage := intelGpuInfo.Engines.Render3D.Busy +
+		intelGpuInfo.Engines.Blitter.Busy +
+		intelGpuInfo.Engines.Video.Busy +
+		intelGpuInfo.Engines.VideoEnhance.Busy
+	
+	// Use the higher of GPU or Package power
+	power := intelGpuInfo.Power.GPU
+	if intelGpuInfo.Power.Package > power {
+		power = intelGpuInfo.Power.Package
+	}
+
+	// Update GPU data
+	gpu.Usage += totalUsage // Will be averaged by Count in GetCurrentData
+	gpu.Power += power     // Will be averaged by Count in GetCurrentData
+	gpu.Count++
+
+	slog.Debug("Updated Intel GPU data", 
+		"usage", totalUsage,
+		"power", power,
+		"count", gpu.Count)
+
+	return true
 }
 
 // sums and resets the current GPU utilization data since the last update
@@ -369,7 +424,12 @@ func (gm *GPUManager) startCollector(command string) {
 			}
 		}()
 	case intelGpuTopCmd:
-		collector.cmdArgs = []string{"-J", "-i", fmt.Sprintf("%d", intelGpuTopInterval)}
+		collector.cmdArgs = []string{
+			"-J",           // JSON output
+			"-s", "1000",   // 1 second refresh rate
+			"-o", "-",      // Output to stdout
+			"-p",          // Show physical engines
+		}
 		collector.parse = gm.parseIntelGpuTopData
 		go func() {
 			failures := 0
@@ -377,10 +437,14 @@ func (gm *GPUManager) startCollector(command string) {
 				if err := collector.collect(); err != nil {
 					failures++
 					if failures > maxFailureRetries {
+						slog.Error("Intel GPU data collection failed too many times, stopping", "failures", failures)
 						break
 					}
-					slog.Warn("Error collecting Intel GPU data", "err", err)
+					slog.Warn("Error collecting Intel GPU data", "err", err, "failures", failures)
+					time.Sleep(retryWaitTime)
+					continue
 				}
+				failures = 0 // Reset failure count on successful collection
 				time.Sleep(intelGpuTopInterval)
 			}
 		}()
