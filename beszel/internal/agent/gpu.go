@@ -21,7 +21,7 @@ const (
 	nvidiaSmiCmd  = "nvidia-smi"
 	rocmSmiCmd    = "rocm-smi"
 	tegraStatsCmd = "tegrastats"
-	intelGpuTopCmd = "intel-gpu-top"
+	intelGpuTopCmd = "/usr/bin/intel_gpu_top"
 
 	// Polling intervals
 	nvidiaSmiInterval  = "4"    // in seconds
@@ -91,12 +91,15 @@ func (c *gpuCollector) start() {
 // collect executes the command, parses output with the assigned parser function
 func (c *gpuCollector) collect() error {
 	cmd := exec.Command(c.name, c.cmdArgs...)
+	if c.name == intelGpuTopCmd {
+		cmd.Path = intelGpuTopCmd // Use full path for intel_gpu_top
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create stdout pipe: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
-		return err
+		return fmt.Errorf("failed to start command: %w", err)
 	}
 
 	scanner := bufio.NewScanner(stdout)
@@ -268,7 +271,7 @@ type IntelGpuTopJson struct {
 
 // getIntelGpuName gets the name of the Intel GPU using intel-gpu-top
 func (gm *GPUManager) getIntelGpuName() string {
-	cmd := exec.Command("intel-gpu-top")
+	cmd := exec.Command(intelGpuTopCmd)
 	output, err := cmd.Output()
 	if err != nil {
 		return "Intel GPU"
@@ -426,9 +429,6 @@ func (gm *GPUManager) startCollector(command string) {
 	case intelGpuTopCmd:
 		collector.cmdArgs = []string{
 			"-J",           // JSON output
-			"-s", "1000",   // 1 second refresh rate
-			"-o", "-",      // Output to stdout
-			"-p",          // Show physical engines
 		}
 		collector.parse = gm.parseIntelGpuTopData
 		go func() {
@@ -437,7 +437,7 @@ func (gm *GPUManager) startCollector(command string) {
 				if err := collector.collect(); err != nil {
 					failures++
 					if failures > maxFailureRetries {
-						slog.Error("Intel GPU data collection failed too many times, stopping", "failures", failures)
+						slog.Error("Intel GPU data collection failed too many times, stopping", "failures", failures, "err", err)
 						break
 					}
 					slog.Warn("Error collecting Intel GPU data", "err", err, "failures", failures)

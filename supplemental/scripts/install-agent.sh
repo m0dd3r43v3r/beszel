@@ -295,6 +295,13 @@ else
   if getent group docker >/dev/null 2>&1; then
     usermod -aG docker beszel
   fi
+  # Add the user to video and render groups for GPU access
+  if getent group video >/dev/null 2>&1; then
+    usermod -aG video beszel
+  fi
+  if getent group render >/dev/null 2>&1; then
+    usermod -aG render beszel
+  fi
 fi
 
 # Create the directory for the Beszel Agent
