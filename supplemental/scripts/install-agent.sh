@@ -282,15 +282,19 @@ if is_alpine; then
     echo "Creating a dedicated user for the Beszel Agent service..."
     adduser -D -H -s /sbin/nologin beszel
   fi
-  # Add the user to the docker group to allow access to the Docker socket
-  addgroup beszel docker
+  # Add the user to the docker group to allow access to the Docker socket if it exists
+  if getent group docker >/dev/null 2>&1; then
+    addgroup beszel docker
+  fi
 else
   if ! id -u beszel >/dev/null 2>&1; then
     echo "Creating a dedicated user for the Beszel Agent service..."
     useradd -M -s /bin/false beszel
   fi
-  # Add the user to the docker group to allow access to the Docker socket
-  usermod -aG docker beszel
+  # Add the user to the docker group to allow access to the Docker socket if it exists
+  if getent group docker >/dev/null 2>&1; then
+    usermod -aG docker beszel
+  fi
 fi
 
 # Create the directory for the Beszel Agent
@@ -306,7 +310,7 @@ echo "Downloading and installing the agent..."
 
 OS=$(uname -s | sed -e 'y/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/')
 ARCH=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/armv6l/arm/' -e 's/armv7l/arm/' -e 's/aarch64/arm64/')
-FILE_NAME="beszel-agent_${OS}_${ARCH}.tar.gz"
+FILE_NAME="beszel_${OS}_${ARCH}.tar.gz"
 LATEST_VERSION=$(curl -s "$GITHUB_API_URL""/repos/$GITHUB_USER/$GITHUB_REPO/releases/latest" | grep -o '"tag_name": "v[^"]*"' | cut -d'"' -f4 | tr -d 'v')
 if [ -z "$LATEST_VERSION" ]; then
   echo "Failed to get latest version"
