@@ -21,13 +21,13 @@ const (
 	nvidiaSmiCmd  = "nvidia-smi"
 	rocmSmiCmd    = "rocm-smi"
 	tegraStatsCmd = "tegrastats"
-	xpuSmiCmd     = "xpu-smi"
+	intelGpuTopCmd = "intel-gpu-top"
 
 	// Polling intervals
 	nvidiaSmiInterval  = "4"    // in seconds
 	tegraStatsInterval = "3700" // in milliseconds
 	rocmSmiInterval    = 4300 * time.Millisecond
-	xpuSmiInterval     = 4 * time.Second
+	intelGpuTopInterval = 4 * time.Second
 
 	// Command retry and timeout constants
 	retryWaitTime     = 5 * time.Second
@@ -43,11 +43,11 @@ const (
 // GPUManager manages data collection for GPUs (either Nvidia or AMD)
 type GPUManager struct {
 	sync.Mutex
-	nvidiaSmi  bool
-	rocmSmi    bool
-	tegrastats bool
-	xpuSmi     bool
-	GpuDataMap map[string]*system.GPUData
+	nvidiaSmi    bool
+	rocmSmi      bool
+	tegrastats   bool
+	intelGpuTop  bool
+	GpuDataMap   map[string]*system.GPUData
 }
 
 // RocmSmiJson represents the JSON structure of rocm-smi output
@@ -60,17 +60,6 @@ type RocmSmiJson struct {
 	Usage        string `json:"GPU use (%)"`
 	PowerPackage string `json:"Average Graphics Package Power (W)"`
 	PowerSocket  string `json:"Current Socket Graphics Package Power (W)"`
-}
-
-// XpuSmiJson represents the JSON structure of xpu-smi output
-type XpuSmiJson struct {
-	DeviceID     string `json:"device_id"`
-	Name         string `json:"device_name"`
-	Temperature  string `json:"temperature"`
-	MemoryUsed   string `json:"memory_used"`
-	MemoryTotal  string `json:"memory_total"`
-	Usage        string `json:"utilization"`
-	Power        string `json:"power"`
 }
 
 // gpuCollector defines a collector for a specific GPU management utility (nvidia-smi or rocm-smi)
@@ -250,32 +239,44 @@ func (gm *GPUManager) parseAmdData(output []byte) bool {
 	return true
 }
 
-// parseXpuSmiData parses the output of xpu-smi and updates the GPUData map
-func (gm *GPUManager) parseXpuSmiData(output []byte) bool {
-	var xpuSmiInfo map[string]XpuSmiJson
-	if err := json.Unmarshal(output, &xpuSmiInfo); err != nil || len(xpuSmiInfo) == 0 {
-		return false
-	}
+// parseIntelGpuTopData parses the output of intel-gpu-top and updates the GPUData map
+func (gm *GPUManager) parseIntelGpuTopData(output []byte) bool {
 	gm.Lock()
 	defer gm.Unlock()
-	for _, v := range xpuSmiInfo {
-		power, _ := strconv.ParseFloat(v.Power, 64)
-		memoryUsage, _ := strconv.ParseFloat(v.MemoryUsed, 64)
-		totalMemory, _ := strconv.ParseFloat(v.MemoryTotal, 64)
-		usage, _ := strconv.ParseFloat(v.Usage, 64)
-
-		if _, ok := gm.GpuDataMap[v.DeviceID]; !ok {
-			gm.GpuDataMap[v.DeviceID] = &system.GPUData{Name: v.Name}
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	var valid bool
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Skip header lines
+		if strings.Contains(line, "Engine") || strings.Contains(line, "GPU") {
+			continue
 		}
-		gpu := gm.GpuDataMap[v.DeviceID]
-		gpu.Temperature, _ = strconv.ParseFloat(v.Temperature, 64)
-		gpu.MemoryUsed = bytesToMegabytes(memoryUsage)
-		gpu.MemoryTotal = bytesToMegabytes(totalMemory)
+		// Parse GPU data line
+		fields := strings.Fields(line)
+		if len(fields) < 6 {
+			continue
+		}
+		valid = true
+		id := "0" // intel-gpu-top only shows one GPU at a time
+		name := fields[0]
+		usage, _ := strconv.ParseFloat(fields[1], 64)
+		power, _ := strconv.ParseFloat(fields[2], 64)
+		memoryUsed, _ := strconv.ParseFloat(fields[3], 64)
+		memoryTotal, _ := strconv.ParseFloat(fields[4], 64)
+		temperature, _ := strconv.ParseFloat(fields[5], 64)
+
+		if _, ok := gm.GpuDataMap[id]; !ok {
+			gm.GpuDataMap[id] = &system.GPUData{Name: name}
+		}
+		gpu := gm.GpuDataMap[id]
+		gpu.Temperature = temperature
+		gpu.MemoryUsed = memoryUsed
+		gpu.MemoryTotal = memoryTotal
 		gpu.Usage += usage
 		gpu.Power += power
 		gpu.Count++
 	}
-	return true
+	return valid
 }
 
 // sums and resets the current GPU utilization data since the last update
@@ -326,13 +327,13 @@ func (gm *GPUManager) detectGPUs() error {
 	if _, err := exec.LookPath(tegraStatsCmd); err == nil {
 		gm.tegrastats = true
 	}
-	if _, err := exec.LookPath(xpuSmiCmd); err == nil {
-		gm.xpuSmi = true
+	if _, err := exec.LookPath(intelGpuTopCmd); err == nil {
+		gm.intelGpuTop = true
 	}
-	if gm.nvidiaSmi || gm.rocmSmi || gm.tegrastats || gm.xpuSmi {
+	if gm.nvidiaSmi || gm.rocmSmi || gm.tegrastats || gm.intelGpuTop {
 		return nil
 	}
-	return fmt.Errorf("no GPU found - install nvidia-smi, rocm-smi, or tegrastats")
+	return fmt.Errorf("no GPU found - install nvidia-smi, rocm-smi, tegrastats, or intel-gpu-tools")
 }
 
 // startCollector starts the appropriate GPU data collector based on the command
@@ -367,9 +368,9 @@ func (gm *GPUManager) startCollector(command string) {
 				time.Sleep(rocmSmiInterval)
 			}
 		}()
-	case xpuSmiCmd:
-		collector.cmdArgs = []string{"--json", "--interval", fmt.Sprintf("%d", xpuSmiInterval)}
-		collector.parse = gm.parseXpuSmiData
+	case intelGpuTopCmd:
+		collector.cmdArgs = []string{"-J", "-i", fmt.Sprintf("%d", intelGpuTopInterval)}
+		collector.parse = gm.parseIntelGpuTopData
 		go func() {
 			failures := 0
 			for {
@@ -380,7 +381,7 @@ func (gm *GPUManager) startCollector(command string) {
 					}
 					slog.Warn("Error collecting Intel GPU data", "err", err)
 				}
-				time.Sleep(xpuSmiInterval)
+				time.Sleep(intelGpuTopInterval)
 			}
 		}()
 	}
@@ -403,8 +404,8 @@ func NewGPUManager() (*GPUManager, error) {
 	if gm.tegrastats {
 		gm.startCollector(tegraStatsCmd)
 	}
-	if gm.xpuSmi {
-		gm.startCollector(xpuSmiCmd)
+	if gm.intelGpuTop {
+		gm.startCollector(intelGpuTopCmd)
 	}
 
 	return &gm, nil

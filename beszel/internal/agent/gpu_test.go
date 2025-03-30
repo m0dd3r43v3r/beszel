@@ -741,7 +741,7 @@ func TestAccumulation(t *testing.T) {
 	}
 }
 
-func TestParseXpuSmiData(t *testing.T) {
+func TestParseIntelGpuTopData(t *testing.T) {
 	tests := []struct {
 		name      string
 		input     string
@@ -749,25 +749,16 @@ func TestParseXpuSmiData(t *testing.T) {
 		wantValid bool
 	}{
 		{
-			name: "valid single gpu data",
-			input: `{
-				"0": {
-					"device_id": "0",
-					"device_name": "Intel(R) UHD Graphics 630",
-					"temperature": "45.0",
-					"memory_used": "1073741824",
-					"memory_total": "8589934592",
-					"utilization": "25.5",
-					"power": "15.3"
-				}
-			}`,
+			name: "valid intel-gpu-top data",
+			input: `Engine     GPU  Power  Memory  Memory  Temperature
+GPU       Intel(R) UHD Graphics 630  15.3  1024.0  8192.0  45.0`,
 			wantData: map[string]system.GPUData{
 				"0": {
 					Name:        "Intel(R) UHD Graphics 630",
 					Temperature: 45.0,
-					MemoryUsed:  1073741824.0 / (1024 * 1024),
-					MemoryTotal: 8589934592.0 / (1024 * 1024),
-					Usage:       25.5,
+					MemoryUsed:  1024.0,
+					MemoryTotal: 8192.0,
+					Usage:       0.0,
 					Power:       15.3,
 					Count:       1,
 				},
@@ -775,52 +766,9 @@ func TestParseXpuSmiData(t *testing.T) {
 			wantValid: true,
 		},
 		{
-			name: "valid multi gpu data",
-			input: `{
-				"0": {
-					"device_id": "0",
-					"device_name": "Intel(R) UHD Graphics 630",
-					"temperature": "45.0",
-					"memory_used": "1073741824",
-					"memory_total": "8589934592",
-					"utilization": "25.5",
-					"power": "15.3"
-				},
-				"1": {
-					"device_id": "1",
-					"device_name": "Intel(R) Arc A750",
-					"temperature": "65.0",
-					"memory_used": "4294967296",
-					"memory_total": "8589934592",
-					"utilization": "75.0",
-					"power": "180.0"
-				}
-			}`,
-			wantData: map[string]system.GPUData{
-				"0": {
-					Name:        "Intel(R) UHD Graphics 630",
-					Temperature: 45.0,
-					MemoryUsed:  1073741824.0 / (1024 * 1024),
-					MemoryTotal: 8589934592.0 / (1024 * 1024),
-					Usage:       25.5,
-					Power:       15.3,
-					Count:       1,
-				},
-				"1": {
-					Name:        "Intel(R) Arc A750",
-					Temperature: 65.0,
-					MemoryUsed:  4294967296.0 / (1024 * 1024),
-					MemoryTotal: 8589934592.0 / (1024 * 1024),
-					Usage:       75.0,
-					Power:       180.0,
-					Count:       1,
-				},
-			},
-			wantValid: true,
-		},
-		{
-			name:      "invalid json",
-			input:     "{bad json",
+			name: "invalid data format",
+			input: `Engine     GPU  Power  Memory  Memory  Temperature
+Invalid    Format`,
 			wantData:  map[string]system.GPUData{},
 			wantValid: false,
 		},
@@ -831,7 +779,7 @@ func TestParseXpuSmiData(t *testing.T) {
 			gm := &GPUManager{
 				GpuDataMap: make(map[string]*system.GPUData),
 			}
-			valid := gm.parseXpuSmiData([]byte(tt.input))
+			valid := gm.parseIntelGpuTopData([]byte(tt.input))
 			assert.Equal(t, tt.wantValid, valid)
 
 			if tt.wantValid {
