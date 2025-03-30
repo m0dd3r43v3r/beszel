@@ -17,7 +17,7 @@ func (a *Agent) initializeNetIoStats() {
 	nics, nicsEnvExists := GetEnv("NICS")
 	if nicsEnvExists {
 		nicsMap = make(map[string]struct{}, 0)
-		for nic := range strings.SplitSeq(nics, ",") {
+		for _, nic := range strings.Split(nics, ",") {
 			nicsMap[nic] = struct{}{}
 		}
 	}

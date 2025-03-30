@@ -368,7 +368,7 @@ func (gm *GPUManager) startCollector(command string) {
 			}
 		}()
 	case xpuSmiCmd:
-		collector.cmdArgs = []string{"--json", "--interval", xpuSmiInterval}
+		collector.cmdArgs = []string{"--json", "--interval", fmt.Sprintf("%d", xpuSmiInterval)}
 		collector.parse = gm.parseXpuSmiData
 		go func() {
 			failures := 0

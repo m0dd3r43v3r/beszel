@@ -66,7 +66,7 @@ func NewAgent() *Agent {
 	// Set sensors whitelist
 	if sensors, exists := GetEnv("SENSORS"); exists {
 		agent.sensorsWhitelist = make(map[string]struct{})
-		for sensor := range strings.SplitSeq(sensors, ",") {
+		for _, sensor := range strings.Split(sensors, ",") {
 			if sensor != "" {
 				agent.sensorsWhitelist[sensor] = struct{}{}
 			}

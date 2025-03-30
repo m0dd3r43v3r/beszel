@@ -64,7 +64,7 @@ func (a *Agent) handleSession(s sshServer.Session) {
 // It returns a slice of ssh.PublicKey and an error if any key fails to parse.
 func ParseKeys(input string) ([]ssh.PublicKey, error) {
 	var parsedKeys []ssh.PublicKey
-	for line := range strings.Lines(input) {
+	for _, line := range strings.Split(input, "\n") {
 		line = strings.TrimSpace(line)
 		// Skip empty lines or comments
 		if len(line) == 0 || strings.HasPrefix(line, "#") {
