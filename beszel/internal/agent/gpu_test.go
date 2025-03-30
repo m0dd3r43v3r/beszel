@@ -539,7 +539,7 @@ echo '{"card0": {"Temperature (Sensor edge) (C)": "49.0", "Current Socket Graphi
 					assert.Equal(t, "Rembrandt [Radeon 680M]", gpu.Name)
 					assert.InDelta(t, 49.0, gpu.Temperature, 0.01)
 					assert.InDelta(t, 28.159, gpu.Power, 0.01)
-				}
+				},
 			},
 		},
 		{
@@ -736,6 +736,116 @@ func TestAccumulation(t *testing.T) {
 				assert.InDelta(t, expected.temperature, gpu.Temperature, 0.01, "Temperature in GetCurrentData should match")
 				assert.InDelta(t, expected.avgUsage, gpu.Usage, 0.01, "Average usage in GetCurrentData should match")
 				assert.InDelta(t, expected.avgPower, gpu.Power, 0.01, "Average power in GetCurrentData should match")
+			}
+		})
+	}
+}
+
+func TestParseXpuSmiData(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantData  map[string]system.GPUData
+		wantValid bool
+	}{
+		{
+			name: "valid single gpu data",
+			input: `{
+				"0": {
+					"device_id": "0",
+					"device_name": "Intel(R) UHD Graphics 630",
+					"temperature": "45.0",
+					"memory_used": "1073741824",
+					"memory_total": "8589934592",
+					"utilization": "25.5",
+					"power": "15.3"
+				}
+			}`,
+			wantData: map[string]system.GPUData{
+				"0": {
+					Name:        "Intel(R) UHD Graphics 630",
+					Temperature: 45.0,
+					MemoryUsed:  1073741824.0 / (1024 * 1024),
+					MemoryTotal: 8589934592.0 / (1024 * 1024),
+					Usage:       25.5,
+					Power:       15.3,
+					Count:       1,
+				},
+			},
+			wantValid: true,
+		},
+		{
+			name: "valid multi gpu data",
+			input: `{
+				"0": {
+					"device_id": "0",
+					"device_name": "Intel(R) UHD Graphics 630",
+					"temperature": "45.0",
+					"memory_used": "1073741824",
+					"memory_total": "8589934592",
+					"utilization": "25.5",
+					"power": "15.3"
+				},
+				"1": {
+					"device_id": "1",
+					"device_name": "Intel(R) Arc A750",
+					"temperature": "65.0",
+					"memory_used": "4294967296",
+					"memory_total": "8589934592",
+					"utilization": "75.0",
+					"power": "180.0"
+				}
+			}`,
+			wantData: map[string]system.GPUData{
+				"0": {
+					Name:        "Intel(R) UHD Graphics 630",
+					Temperature: 45.0,
+					MemoryUsed:  1073741824.0 / (1024 * 1024),
+					MemoryTotal: 8589934592.0 / (1024 * 1024),
+					Usage:       25.5,
+					Power:       15.3,
+					Count:       1,
+				},
+				"1": {
+					Name:        "Intel(R) Arc A750",
+					Temperature: 65.0,
+					MemoryUsed:  4294967296.0 / (1024 * 1024),
+					MemoryTotal: 8589934592.0 / (1024 * 1024),
+					Usage:       75.0,
+					Power:       180.0,
+					Count:       1,
+				},
+			},
+			wantValid: true,
+		},
+		{
+			name:      "invalid json",
+			input:     "{bad json",
+			wantData:  map[string]system.GPUData{},
+			wantValid: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gm := &GPUManager{
+				GpuDataMap: make(map[string]*system.GPUData),
+			}
+			valid := gm.parseXpuSmiData([]byte(tt.input))
+			assert.Equal(t, tt.wantValid, valid)
+
+			if tt.wantValid {
+				for id, want := range tt.wantData {
+					got := gm.GpuDataMap[id]
+					require.NotNil(t, got)
+					assert.Equal(t, want.Name, got.Name)
+					assert.InDelta(t, want.Temperature, got.Temperature, 0.01)
+					assert.InDelta(t, want.MemoryUsed, got.MemoryUsed, 0.01)
+					assert.InDelta(t, want.MemoryTotal, got.MemoryTotal, 0.01)
+					assert.InDelta(t, want.Usage, got.Usage, 0.01)
+					assert.InDelta(t, want.Power, got.Power, 0.01)
+					assert.Equal(t, want.Count, got.Count)
+				}
 			}
 		})
 	}
