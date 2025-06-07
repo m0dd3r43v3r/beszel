@@ -1,7 +1,17 @@
 import { t } from "@lingui/core/macro"
 import { Plural, Trans } from "@lingui/react/macro"
-import { $systems, pb, $chartTime, $containerFilter, $userSettings, $direction, $maxValues } from "@/lib/stores"
+import {
+	$systems,
+	pb,
+	$chartTime,
+	$containerFilter,
+	$userSettings,
+	$direction,
+	$maxValues,
+	$temperatureFilter,
+} from "@/lib/stores"
 import { ChartData, ChartTimes, ContainerStatsRecord, GPUData, SystemRecord, SystemStatsRecord } from "@/types"
+import { ChartType, Os } from "@/lib/enums"
 import React, { lazy, memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Card, CardHeader, CardTitle, CardDescription } from "../ui/card"
 import { useStore } from "@nanostores/react"
@@ -22,7 +32,7 @@ import { Separator } from "../ui/separator"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip"
 import { Button } from "../ui/button"
 import { Input } from "../ui/input"
-import { ChartAverage, ChartMax, Rows, TuxIcon } from "../ui/icons"
+import { ChartAverage, ChartMax, Rows, TuxIcon, WindowsIcon, AppleIcon, FreeBsdIcon } from "../ui/icons"
 import { useIntersectionObserver } from "@/lib/use-intersection-observer"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select"
 import { timeTicks } from "d3-time"
@@ -218,7 +228,7 @@ export default function SystemDetail({ name }: { name: string }) {
 				cache.set(cs_cache_key, containerData)
 			}
 			if (containerData.length) {
-				!containerFilterBar && setContainerFilterBar(<ContainerFilterBar />)
+				!containerFilterBar && setContainerFilterBar(<FilterBar />)
 			} else if (containerFilterBar) {
 				setContainerFilterBar(null)
 			}
@@ -251,6 +261,27 @@ export default function SystemDetail({ name }: { name: string }) {
 		if (!system.info) {
 			return []
 		}
+
+		const osInfo = {
+			[Os.Linux]: {
+				Icon: TuxIcon,
+				value: system.info.k,
+				label: t({ comment: "Linux kernel", message: "Kernel" }),
+			},
+			[Os.Darwin]: {
+				Icon: AppleIcon,
+				value: `macOS ${system.info.k}`,
+			},
+			[Os.Windows]: {
+				Icon: WindowsIcon,
+				value: system.info.k,
+			},
+			[Os.FreeBSD]: {
+				Icon: FreeBsdIcon,
+				value: system.info.k,
+			},
+		}
+
 		let uptime: React.ReactNode
 		if (system.info.u < 172800) {
 			const hours = Math.trunc(system.info.u / 3600)
@@ -268,7 +299,7 @@ export default function SystemDetail({ name }: { name: string }) {
 				hide: system.info.h === system.host || system.info.h === system.name,
 			},
 			{ value: uptime, Icon: ClockArrowUp, label: t`Uptime`, hide: !system.info.u },
-			{ value: system.info.k, Icon: TuxIcon, label: t({ comment: "Linux kernel", message: "Kernel" }) },
+			osInfo[system.info.os ?? Os.Linux],
 			{
 				value: `${system.info.m} (${system.info.c}c${system.info.t ? `/${system.info.t}t` : ""})`,
 				Icon: CpuIcon,
@@ -302,7 +333,13 @@ export default function SystemDetail({ name }: { name: string }) {
 			return
 		}
 		const handleKeyUp = (e: KeyboardEvent) => {
-			if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+			if (
+				e.target instanceof HTMLInputElement ||
+				e.target instanceof HTMLTextAreaElement ||
+				e.shiftKey ||
+				e.ctrlKey ||
+				e.metaKey
+			) {
 				return
 			}
 			const currentIndex = systems.findIndex((s) => s.name === name)
@@ -446,7 +483,7 @@ export default function SystemDetail({ name }: { name: string }) {
 							description={t`Average CPU utilization of containers`}
 							cornerEl={containerFilterBar}
 						>
-							<ContainerChart chartData={chartData} dataKey="c" chartName="cpu" />
+							<ContainerChart chartData={chartData} dataKey="c" chartType={ChartType.CPU} />
 						</ChartCard>
 					)}
 
@@ -467,7 +504,7 @@ export default function SystemDetail({ name }: { name: string }) {
 							description={dockerOrPodman(t`Memory usage of docker containers`, system)}
 							cornerEl={containerFilterBar}
 						>
-							<ContainerChart chartData={chartData} chartName="mem" dataKey="m" unit=" MB" />
+							<ContainerChart chartData={chartData} dataKey="m" chartType={ChartType.Memory} />
 						</ChartCard>
 					)}
 
@@ -509,7 +546,7 @@ export default function SystemDetail({ name }: { name: string }) {
 								cornerEl={containerFilterBar}
 							>
 								{/* @ts-ignore */}
-								<ContainerChart chartData={chartData} chartName="net" dataKey="n" />
+								<ContainerChart chartData={chartData} chartType={ChartType.Network} dataKey="n" />
 							</ChartCard>
 						</div>
 					)}
@@ -533,6 +570,7 @@ export default function SystemDetail({ name }: { name: string }) {
 							grid={grid}
 							title={t`Temperature`}
 							description={t`Temperatures of system sensors`}
+							cornerEl={<FilterBar store={$temperatureFilter} />}
 						>
 							<TemperatureChart chartData={chartData} />
 						</ChartCard>
@@ -630,12 +668,12 @@ export default function SystemDetail({ name }: { name: string }) {
 	)
 }
 
-function ContainerFilterBar() {
-	const containerFilter = useStore($containerFilter)
+function FilterBar({ store = $containerFilter }: { store?: typeof $containerFilter }) {
+	const containerFilter = useStore(store)
 	const { t } = useLingui()
 
 	const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-		$containerFilter.set(e.target.value)
+		store.set(e.target.value)
 	}, [])
 
 	return (
@@ -648,7 +686,7 @@ function ContainerFilterBar() {
 					size="icon"
 					aria-label="Clear"
 					className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100"
-					onClick={() => $containerFilter.set("")}
+					onClick={() => store.set("")}
 				>
 					<XIcon className="h-4 w-4" />
 				</Button>

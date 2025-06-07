@@ -16,14 +16,31 @@ import (
 	"github.com/shirou/gopsutil/v4/host"
 	"github.com/shirou/gopsutil/v4/mem"
 	psutilNet "github.com/shirou/gopsutil/v4/net"
-	"github.com/shirou/gopsutil/v4/sensors"
 )
 
 // Sets initial / non-changing values about the host system
 func (a *Agent) initializeSystemInfo() {
 	a.systemInfo.AgentVersion = beszel.Version
 	a.systemInfo.Hostname, _ = os.Hostname()
-	a.systemInfo.KernelVersion, _ = host.KernelVersion()
+
+	platform, _, version, _ := host.PlatformInformation()
+
+	if platform == "darwin" {
+		a.systemInfo.KernelVersion = version
+		a.systemInfo.Os = system.Darwin
+	} else if strings.Contains(platform, "indows") {
+		a.systemInfo.KernelVersion = strings.Replace(platform, "Microsoft ", "", 1) + " " + version
+		a.systemInfo.Os = system.Windows
+	} else if platform == "freebsd" {
+		a.systemInfo.Os = system.Freebsd
+		a.systemInfo.KernelVersion = version
+	} else {
+		a.systemInfo.Os = system.Linux
+	}
+
+	if a.systemInfo.KernelVersion == "" {
+		a.systemInfo.KernelVersion, _ = host.KernelVersion()
+	}
 
 	// cpu model
 	if info, err := cpu.Info(); err == nil && len(info) > 0 {
@@ -200,15 +217,23 @@ func (a *Agent) getSystemStats() system.Stats {
 			if systemStats.Temperatures == nil {
 				systemStats.Temperatures = make(map[string]float64, len(gpuData))
 			}
+			highestTemp := 0.0
 			for _, gpu := range gpuData {
 				if gpu.Temperature > 0 {
 					systemStats.Temperatures[gpu.Name] = gpu.Temperature
-					if a.primarySensor == gpu.Name {
+					if a.sensorConfig.primarySensor == gpu.Name {
 						a.systemInfo.DashboardTemp = gpu.Temperature
+					}
+					if gpu.Temperature > highestTemp {
+						highestTemp = gpu.Temperature
 					}
 				}
 				// update high gpu percent for dashboard
 				a.systemInfo.GpuPct = max(a.systemInfo.GpuPct, gpu.Usage)
+			}
+			// use highest temp for dashboard temp if dashboard temp is unset
+			if a.systemInfo.DashboardTemp == 0 {
+				a.systemInfo.DashboardTemp = highestTemp
 			}
 		}
 	}
@@ -222,52 +247,6 @@ func (a *Agent) getSystemStats() system.Stats {
 	slog.Debug("sysinfo", "data", a.systemInfo)
 
 	return systemStats
-}
-
-func (a *Agent) updateTemperatures(systemStats *system.Stats) {
-	// skip if sensors whitelist is set to empty string
-	if a.sensorsWhitelist != nil && len(a.sensorsWhitelist) == 0 {
-		slog.Debug("Skipping temperature collection")
-		return
-	}
-
-	// reset high temp
-	a.systemInfo.DashboardTemp = 0
-
-	// get sensor data
-	temps, _ := sensors.TemperaturesWithContext(a.sensorsContext)
-	slog.Debug("Temperature", "sensors", temps)
-
-	// return if no sensors
-	if len(temps) == 0 {
-		return
-	}
-
-	systemStats.Temperatures = make(map[string]float64, len(temps))
-	for i, sensor := range temps {
-		// skip if temperature is unreasonable
-		if sensor.Temperature <= 0 || sensor.Temperature >= 200 {
-			continue
-		}
-		sensorName := sensor.SensorKey
-		if _, ok := systemStats.Temperatures[sensorName]; ok {
-			// if key already exists, append int to key
-			sensorName = sensorName + "_" + strconv.Itoa(i)
-		}
-		// skip if not in whitelist
-		if a.sensorsWhitelist != nil {
-			if _, nameInWhitelist := a.sensorsWhitelist[sensorName]; !nameInWhitelist {
-				continue
-			}
-		}
-		// set dashboard temperature
-		if a.primarySensor == "" {
-			a.systemInfo.DashboardTemp = max(a.systemInfo.DashboardTemp, sensor.Temperature)
-		} else if a.primarySensor == sensorName {
-			a.systemInfo.DashboardTemp = sensor.Temperature
-		}
-		systemStats.Temperatures[sensorName] = twoDecimals(sensor.Temperature)
-	}
 }
 
 // Returns the size of the ZFS ARC memory cache in bytes
