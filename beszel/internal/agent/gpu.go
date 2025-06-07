@@ -4,9 +4,10 @@ import (
 	"beszel/internal/entities/system"
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -19,15 +20,15 @@ import (
 
 const (
 	// Commands
-	nvidiaSmiCmd  = "nvidia-smi"
-	rocmSmiCmd    = "rocm-smi"
-	tegraStatsCmd = "tegrastats"
+	nvidiaSmiCmd   = "nvidia-smi"
+	rocmSmiCmd     = "rocm-smi"
+	tegraStatsCmd  = "tegrastats"
 	intelGpuTopCmd = "/usr/bin/intel_gpu_top"
 
 	// Polling intervals
-	nvidiaSmiInterval  = "4"    // in seconds
-	tegraStatsInterval = "3700" // in milliseconds
-	rocmSmiInterval    = 4300 * time.Millisecond
+	nvidiaSmiInterval   = "4"    // in seconds
+	tegraStatsInterval  = "3700" // in milliseconds
+	rocmSmiInterval     = 4300 * time.Millisecond
 	intelGpuTopInterval = 4 * time.Second
 
 	// Command retry and timeout constants
@@ -44,11 +45,11 @@ const (
 // GPUManager manages data collection for GPUs (either Nvidia or AMD)
 type GPUManager struct {
 	sync.Mutex
-	nvidiaSmi    bool
-	rocmSmi      bool
-	tegrastats   bool
-	intelGpuTop  bool
-	GpuDataMap   map[string]*system.GPUData
+	nvidiaSmi   bool
+	rocmSmi     bool
+	tegrastats  bool
+	intelGpuTop bool
+	GpuDataMap  map[string]*system.GPUData
 }
 
 // RocmSmiJson represents the JSON structure of rocm-smi output
@@ -91,6 +92,64 @@ func (c *gpuCollector) start() {
 
 // collect executes the command, parses output with the assigned parser function
 func (c *gpuCollector) collect() error {
+	// For intel_gpu_top, use a timeout since it runs continuously
+	if c.name == "sudo" {
+		fmt.Printf("=== INTEL GPU COLLECT: About to run: %s %v ===\n", c.name, c.cmdArgs)
+
+		// Create command with timeout context
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		cmd := exec.CommandContext(ctx, c.name, c.cmdArgs...)
+
+		fmt.Printf("=== INTEL GPU COLLECT: Command created: %s %v ===\n", cmd.Path, cmd.Args)
+
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return fmt.Errorf("failed to create stdout pipe: %w", err)
+		}
+
+		fmt.Println("=== INTEL GPU COLLECT: Starting process ===")
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("failed to start intel_gpu_top: %w", err)
+		}
+
+		fmt.Println("=== INTEL GPU COLLECT: Reading JSON array ===")
+
+		// Use a JSON decoder to read from the streaming array
+		decoder := json.NewDecoder(stdout)
+
+		// Read the opening bracket [
+		token, err := decoder.Token()
+		if err != nil {
+			cmd.Process.Kill()
+			return fmt.Errorf("failed to read opening bracket: %w", err)
+		}
+		fmt.Printf("=== INTEL GPU COLLECT: Read token: %v ===\n", token)
+
+		// Read the first JSON object from the array
+		var jsonData json.RawMessage
+		if err := decoder.Decode(&jsonData); err != nil {
+			cmd.Process.Kill()
+			return fmt.Errorf("failed to decode first JSON object: %w", err)
+		}
+
+		fmt.Println("=== INTEL GPU COLLECT: Successfully read first JSON object ===")
+
+		// Kill the process since we got our data
+		cmd.Process.Kill()
+
+		// Parse the JSON data
+		fmt.Println("=== INTEL GPU COLLECT: Parsing data ===")
+		if !c.parse(jsonData) {
+			return errNoValidData
+		}
+		fmt.Println("=== INTEL GPU COLLECT: Parse successful ===")
+
+		return nil
+	}
+
+	// Original code for other GPU types
 	cmd := exec.Command(c.name, c.cmdArgs...)
 	if c.name == intelGpuTopCmd {
 		cmd.Path = intelGpuTopCmd // Use full path for intel_gpu_top
@@ -101,18 +160,6 @@ func (c *gpuCollector) collect() error {
 	}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start command: %w", err)
-	}
-
-	// For intel_gpu_top, read the entire output as one JSON object
-	if c.name == intelGpuTopCmd {
-		output, err := io.ReadAll(stdout)
-		if err != nil {
-			return fmt.Errorf("failed to read intel_gpu_top output: %w", err)
-		}
-		if !c.parse(output) {
-			return errNoValidData
-		}
-		return cmd.Wait()
 	}
 
 	// For other tools, use line-by-line scanning
@@ -263,24 +310,28 @@ type IntelGpuTopJson struct {
 		Package float64 `json:"Package"`
 		Unit    string  `json:"unit"`
 	} `json:"power"`
-	Engines struct {
-		Render3D struct {
-			Busy float64 `json:"busy"`
-			Unit string  `json:"unit"`
-		} `json:"Render/3D"`
-		Blitter struct {
-			Busy float64 `json:"busy"`
-			Unit string  `json:"unit"`
-		} `json:"Blitter"`
-		Video struct {
-			Busy float64 `json:"busy"`
-			Unit string  `json:"unit"`
-		} `json:"Video"`
-		VideoEnhance struct {
-			Busy float64 `json:"busy"`
-			Unit string  `json:"unit"`
-		} `json:"VideoEnhance"`
-	} `json:"engines"`
+	Clients map[string]struct {
+		Name          string `json:"name"`
+		PID           string `json:"pid"`
+		EngineClasses struct {
+			Render3D struct {
+				Busy string `json:"busy"`
+				Unit string `json:"unit"`
+			} `json:"Render/3D"`
+			Blitter struct {
+				Busy string `json:"busy"`
+				Unit string `json:"unit"`
+			} `json:"Blitter"`
+			Video struct {
+				Busy string `json:"busy"`
+				Unit string `json:"unit"`
+			} `json:"Video"`
+			VideoEnhance struct {
+				Busy string `json:"busy"`
+				Unit string `json:"unit"`
+			} `json:"VideoEnhance"`
+		} `json:"engine-classes"`
+	} `json:"clients"`
 }
 
 // getIntelGpuName gets the name of the Intel GPU using intel-gpu-top
@@ -310,44 +361,78 @@ func (gm *GPUManager) getIntelGpuName() string {
 
 // parseIntelGpuTopData parses the output of intel-gpu-top and updates the GPUData map
 func (gm *GPUManager) parseIntelGpuTopData(output []byte) bool {
+	fmt.Println("=== PARSE INTEL: Starting parse function ===")
+
 	var intelGpuInfo IntelGpuTopJson
 	if err := json.Unmarshal(output, &intelGpuInfo); err != nil {
+		fmt.Printf("=== PARSE INTEL: JSON unmarshal error: %v ===\n", err)
 		slog.Debug("Failed to parse Intel GPU JSON", "error", err)
 		return false
 	}
-	gm.Lock()
-	defer gm.Unlock()
+	fmt.Println("=== PARSE INTEL: JSON unmarshalled successfully ===")
 
+	fmt.Println("=== PARSE INTEL: Lock acquired ===")
 	id := "0" // intel-gpu-top only shows one GPU at a time
 	if _, ok := gm.GpuDataMap[id]; !ok {
-		name := gm.getIntelGpuName()
+		fmt.Println("=== PARSE INTEL: Initializing with default name ===")
+		name := "Intel GPU" // Use default name to avoid hanging
+		fmt.Printf("=== PARSE INTEL: GPU name: %s ===\n", name)
 		slog.Debug("Initializing Intel GPU", "name", name)
 		gm.GpuDataMap[id] = &system.GPUData{Name: name}
+		fmt.Println("=== PARSE INTEL: GPU initialized ===")
 	}
+
+	fmt.Println("=== PARSE INTEL: Getting GPU object ===")
 	gpu := gm.GpuDataMap[id]
-	
-	// Calculate total GPU usage from all engines
-	totalUsage := intelGpuInfo.Engines.Render3D.Busy +
-		intelGpuInfo.Engines.Blitter.Busy +
-		intelGpuInfo.Engines.Video.Busy +
-		intelGpuInfo.Engines.VideoEnhance.Busy
-	
+
+	// Calculate maximum GPU usage per engine type
+	fmt.Println("=== PARSE INTEL: Calculating usage ===")
+	var maxRender3D, maxVideo, maxVideoEnhance, maxBlitter float64
+
+	for _, client := range intelGpuInfo.Clients {
+		// Get maximum usage for each engine type across all clients
+		if busy, err := strconv.ParseFloat(client.EngineClasses.Render3D.Busy, 64); err == nil {
+			maxRender3D = max(maxRender3D, busy)
+		}
+		if busy, err := strconv.ParseFloat(client.EngineClasses.Video.Busy, 64); err == nil {
+			maxVideo = max(maxVideo, busy)
+		}
+		if busy, err := strconv.ParseFloat(client.EngineClasses.VideoEnhance.Busy, 64); err == nil {
+			maxVideoEnhance = max(maxVideoEnhance, busy)
+		}
+		if busy, err := strconv.ParseFloat(client.EngineClasses.Blitter.Busy, 64); err == nil {
+			maxBlitter = max(maxBlitter, busy)
+		}
+	}
+
+	// Take the maximum of all engine maximums
+	maxUsage := max(maxRender3D, maxVideo, maxVideoEnhance, maxBlitter)
+
+	fmt.Printf("=== PARSE INTEL: Total usage: %f ===\n", maxUsage)
+
 	// Use the higher of GPU or Package power
+	fmt.Println("=== PARSE INTEL: Calculating power ===")
 	power := intelGpuInfo.Power.GPU
 	if intelGpuInfo.Power.Package > power {
 		power = intelGpuInfo.Power.Package
 	}
 
-	// Update GPU data
-	gpu.Usage += totalUsage // Will be averaged by Count in GetCurrentData
-	gpu.Power += power     // Will be averaged by Count in GetCurrentData
-	gpu.Count++
+	fmt.Printf("=== PARSE INTEL: Power: %f ===\n", power)
 
-	slog.Debug("Updated Intel GPU data", 
-		"usage", totalUsage,
+	// Update GPU data
+	fmt.Println("=== PARSE INTEL: Updating GPU data ===")
+	gpu.Usage = maxUsage // Just store the current usage
+	gpu.Power = power    // Just store the current power
+	gpu.Count = 1        // Reset count to 1 since we're not accumulating
+
+	fmt.Printf("=== PARSE INTEL: Final data - Usage: %f, Power: %f, Count: %f ===\n", gpu.Usage, gpu.Power, gpu.Count)
+
+	slog.Debug("Updated Intel GPU data",
+		"usage", maxUsage,
 		"power", power,
 		"count", gpu.Count)
 
+	fmt.Println("=== PARSE INTEL: Returning true ===")
 	return true
 }
 
@@ -441,18 +526,25 @@ func (gm *GPUManager) startCollector(command string) {
 			}
 		}()
 	case intelGpuTopCmd:
+		fmt.Println("=== SETTING UP INTEL GPU COLLECTOR ===")
+		collector.name = "sudo"
 		collector.cmdArgs = []string{
-			"-J",           // JSON output
-			"-s", "1",      // 1 second refresh rate
-			"-o", "-",      // Output to stdout
+			"intel_gpu_top",
+			"-J",
+			"-s", "1000",
+			"-o", "-",
 		}
 		collector.parse = gm.parseIntelGpuTopData
 		go func() {
+			fmt.Println("=== INTEL GPU GOROUTINE STARTED ===")
 			failures := 0
 			for {
+				fmt.Println("=== ABOUT TO CALL collector.collect() ===")
 				if err := collector.collect(); err != nil {
 					failures++
+					fmt.Printf("=== INTEL GPU COLLECT ERROR: %v ===\n", err)
 					if failures > maxFailureRetries {
+						fmt.Println("=== INTEL GPU COLLECTOR STOPPING ===")
 						slog.Error("Intel GPU data collection failed too many times, stopping", "failures", failures, "err", err)
 						break
 					}
@@ -460,9 +552,13 @@ func (gm *GPUManager) startCollector(command string) {
 					time.Sleep(retryWaitTime)
 					continue
 				}
+				fmt.Println("=== INTEL GPU COLLECT SUCCESS ===")
 				failures = 0 // Reset failure count on successful collection
+
+				fmt.Printf("=== WAITING %v BEFORE NEXT COLLECTION ===\n", intelGpuTopInterval)
 				time.Sleep(intelGpuTopInterval)
 			}
+			fmt.Println("=== INTEL GPU GOROUTINE ENDED ===")
 		}()
 	}
 }
@@ -485,8 +581,36 @@ func NewGPUManager() (*GPUManager, error) {
 		gm.startCollector(tegraStatsCmd)
 	}
 	if gm.intelGpuTop {
+		fmt.Println("=== ABOUT TO START INTEL GPU COLLECTOR ===")
 		gm.startCollector(intelGpuTopCmd)
+		fmt.Println("=== INTEL GPU COLLECTOR STARTED ===")
 	}
 
 	return &gm, nil
+}
+
+// Add function to read Intel GPU memory from sysfs
+func (gm *GPUManager) readIntelMemoryFromSysfs() (float64, float64, error) {
+	// Try different possible paths for Intel GPU memory info
+	possiblePaths := []string{
+		"/sys/class/drm/card0/memory/used",
+		"/sys/class/drm/card1/memory/used",
+		// Add more paths as needed
+	}
+
+	for _, path := range possiblePaths {
+		if data, err := os.ReadFile(path); err == nil {
+			if memUsed, err := strconv.ParseFloat(strings.TrimSpace(string(data)), 64); err == nil {
+				// Try to get total memory as well
+				totalPath := strings.Replace(path, "used", "total", 1)
+				if totalData, err := os.ReadFile(totalPath); err == nil {
+					if memTotal, err := strconv.ParseFloat(strings.TrimSpace(string(totalData)), 64); err == nil {
+						return memUsed, memTotal, nil
+					}
+				}
+				return memUsed, 0, nil // Return used memory even if total is unavailable
+			}
+		}
+	}
+	return 0, 0, fmt.Errorf("Intel GPU memory info not available")
 }
